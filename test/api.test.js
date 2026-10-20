@@ -141,6 +141,47 @@ test('полный жизненный цикл, версии, валидация
   });
 });
 
+test('30 длинных ответов по 5000 символов принимаются с учётом UTF-8 и JSON-экранирования', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'career-forms-max-answers-'));
+  const file = join(dir, 'store.json');
+  const server = await boot(file);
+  t.after(async () => { await server.stop(); await rm(dir, { recursive: true, force: true }); });
+  const { base } = server;
+  const fields = Array.from({ length: 30 }, (_, i) => q('textarea', `Вопрос ${i + 1}`));
+  const created = await call(base, '/api/admin/forms', { title: 'Максимальная форма', description: '', fields });
+  assert.equal(created.status, 200);
+  const form = created.data;
+  const published = await call(base, `/api/admin/forms/${form.id}/publish`, { revision: form.revision });
+  assert.equal(published.status, 200);
+  const path = `/api/forms/${form.id}/responses`;
+  let payload;
+  for (const char of ['a', 'Я', '漢', '\u0000']) {
+    const answer = char.repeat(5000);
+    payload = { sessionId: id(), requestId: id(), version: 1, answers: Object.fromEntries(fields.map(f => [f.id, answer])) };
+    // One UTF-16 code unit can occupy six bytes in JSON (for example, \u0000).
+    const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+    assert.ok(bytes > 128 * 1024);
+    assert.ok(bytes < 1024 * 1024);
+    const result = await call(base, path, payload);
+    assert.equal(result.status, 200, `Запрос ${bytes} байт: ${JSON.stringify(result.data)}`);
+    const responses = (await call(base, `/api/admin/forms/${form.id}/responses`)).data;
+    const saved = responses.find(r => r.id === result.data.id);
+    assert.deepEqual(saved.answers, payload.answers);
+    const disk = JSON.parse(await readFile(file, 'utf8'));
+    assert.deepEqual(disk.responses.find(r => r.id === result.data.id).answers, payload.answers);
+  }
+
+  const tooLong = { ...payload, requestId: id(), answers: { ...payload.answers, [fields[0].id]: 'Я'.repeat(5001) } };
+  const invalid = await call(base, path, tooLong);
+  assert.equal(invalid.status, 422);
+  assert.equal(invalid.data.fields[fields[0].id], 'Не более 5000 символов');
+
+  // The transport cap still rejects excessive JSON, independently of field validation.
+  const oversized = await call(base, path, { ...payload, requestId: id(), padding: 'a'.repeat(1024 * 1024) });
+  assert.equal(oversized.status, 413);
+  assert.equal((await call(base, `/api/admin/forms/${form.id}/responses`)).data.length, 4);
+});
+
 test('повреждённый JSON не перезаписывается при запуске', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'career-forms-corrupt-'));
   const file = join(dir, 'store.json');

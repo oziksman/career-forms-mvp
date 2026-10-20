@@ -36,6 +36,9 @@ function transaction(fn) {
 }
 function fail(status, message, fields) { throw Object.assign(new Error(message), { status, fields }); }
 const types = new Set(['text', 'textarea', 'email', 'radio']);
+// 30 × 5000 UTF-16 code units can take 900,000 JSON bytes when escaped.
+// 1 MiB covers this maximum plus UUID keys/metadata, and caps memory per request.
+const MAX_JSON_BODY_BYTES = 1024 * 1024;
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const clean = (value, max, name) => {
   if (typeof value !== 'string' || value.length > max) fail(422, `${name}: ожидается текст до ${max} символов`);
@@ -86,7 +89,7 @@ async function body(req) {
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 128 * 1024) fail(413, 'Слишком большой запрос');
+    if (size > MAX_JSON_BODY_BYTES) fail(413, 'Слишком большой запрос');
     chunks.push(chunk);
   }
   try {
