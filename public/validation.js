@@ -55,7 +55,9 @@ export function parseAnswers(fields, raw) {
     const max = answerLimit(f.type);
     if (typeof val !== 'string' || val.length > max) { errors[f.id] = `Не более ${max} символов`; continue; }
     const value = val.trim();
-    if (f.type !== 'textarea' && /[\r\n]/.test(val)) errors[f.id] = 'Используйте одну строку';
+    // Radio answers must match the immutable published options. Older versions
+    // could contain line breaks, before single-line schema rules were added.
+    if ((f.type === 'text' || f.type === 'email') && /[\r\n]/.test(val)) errors[f.id] = 'Используйте одну строку';
     else if (!value && f.required) errors[f.id] = 'Ответьте на обязательный вопрос';
     else if (value && f.type === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) errors[f.id] = 'Введите email в формате name@example.ru';
     else if (value && f.type === 'radio' && !f.options.includes(value)) errors[f.id] = 'Выберите один из предложенных вариантов';

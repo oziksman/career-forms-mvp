@@ -93,7 +93,7 @@ async function createForm(template = false) {
       title: 'Стажировка: первый шаг в профессию', description: 'Расскажите немного о себе. Мы свяжемся с вами по email и подскажем следующий шаг.',
       fields: [question('text', 'Как вас зовут?', true), question('email', 'Ваш email', true), question('radio', 'Какое направление вам интересно?', true, ['Разработка', 'Дизайн', 'Маркетинг']), question('textarea', 'Почему хотите пройти стажировку?')]
     } : { title: 'Новая форма', description: '', fields: [] });
-    await navigate(`/admin/forms/${form.id}`);
+    await navigate(`/admin/forms/${form.id}`, true);
     document.querySelector('#form-title')?.focus();
     document.querySelector('#form-title')?.select();
   } catch (error) { notify(error.message); }
@@ -128,8 +128,7 @@ function renderPreview() {
 }
 function markDirty() {
   dirty = true;
-  const node = document.querySelector('#save-state');
-  if (node) node.textContent = 'Есть несохранённые изменения';
+  updateSaveState();
   clearTimeout(previewTimer);
   previewTimer = setTimeout(() => {
     const preview = document.querySelector('#preview');
@@ -137,6 +136,10 @@ function markDirty() {
     const title = document.querySelector('.editor-heading h1');
     if (title) title.textContent = current.title || 'Новая форма';
   }, 160);
+}
+function updateSaveState() {
+  const node = document.querySelector('#save-state');
+  if (node) node.textContent = dirty ? 'Есть несохранённые изменения' : `Сохранено · ${date(current.updatedAt)}`;
 }
 function setBusy(value, action) {
   busy = value;
@@ -158,26 +161,36 @@ async function save(publish = false) {
   catch (error) { setError(error.message); return; }
   setBusy(true, publish ? 'publish' : 'save');
   document.querySelector('#page-error')?.remove();
+  let draftSaved = false;
   try {
     if (dirty) {
       current = await post(`/api/admin/forms/${current.id}`, payload, 'PUT');
       dirty = false;
+      draftSaved = true;
     }
     if (publish) current = await post(`/api/admin/forms/${current.id}/publish`, { revision: current.revision });
     if (activeTab === 'responses') await renderResponses(); else renderEditor();
     notify(publish ? 'Форма опубликована. Можно приглашать студентов!' : 'Черновик сохранён');
-  } catch (error) { setError(error.message); }
+  } catch (error) {
+    updateSaveState();
+    setError(publish && draftSaved ? `Черновик сохранён. Не удалось подтвердить публикацию. ${error.message}` : error.message);
+  }
   finally { setBusy(false); }
 }
 async function renderResponses() {
   activeTab = 'responses';
+  const formId = current.id;
   shell(`${editorHeader()}${shareCard()}${loading('Загружаем отклики…')}`);
   try {
     const [responses, latest] = await Promise.all([request(`/api/admin/forms/${current.id}/responses`), request(`/api/admin/forms/${current.id}`)]);
+    if (current?.id !== formId || activeTab !== 'responses') return;
     current.stats = latest.stats;
     const { opens, starts, submissions } = current.stats;
     shell(`${editorHeader()}${shareCard()}<section class="stats-grid analytics" aria-label="Аналитика формы">${statCard('Открытия', opens, 'eye', 'Сессии в этой форме')}${statCard('Начали заполнять', starts, 'text', 'Первое изменение ответа')}${statCard('Успешно отправили', submissions, 'check', 'Сохранённые отклики')}</section><details class="analytics-help"><summary>Как считаются показатели?</summary><p>Открытие — одна сессия вкладки браузера для этой формы. Начало — первое изменение любого ответа в этой сессии. Повторное открытие и редактирование в той же вкладке не увеличивают счётчики. Отправки — реально сохранённые отклики; повтор одного запроса не создаёт дубль. При успешной отправке сессия также считается открытой и начатой.</p><p>Это не уникальные люди: другая вкладка или браузер создают новую сессию. Без sessionStorage перезагрузка также создаст новую сессию. Блокировка запросов и сетевые ошибки могут занизить события. Боты не отфильтрованы. Данные суммируются по всем версиям формы.</p></details><div class="section-heading"><h2>Отклики <span class="subtle-count">${responses.length}</span></h2><button class="btn secondary compact" data-action="refresh">Обновить</button></div>${responses.length ? `<div class="responses-list">${responses.map((r, i) => `<details class="response-card"><summary><span class="response-avatar">${esc((Object.values(r.answers).find(Boolean) || 'С').slice(0, 1).toUpperCase())}</span><div><strong>${esc(r.fields.filter(f => ['text', 'email'].includes(f.type)).map(f => r.answers[f.id]).find(Boolean) || `Отклик ${responses.length - i}`)}</strong><small>${date(r.createdAt)} · Версия ${r.version}</small></div><span class="response-open">Посмотреть ${icon('down')}</span></summary><div class="response-body"><p class="response-form-title">${esc(r.title)} · вопросы на момент отправки</p>${r.fields.map(f => `<div class="answer"><dt>${esc(f.label)}</dt><dd>${esc(r.answers[f.id] || 'Нет ответа')}</dd></div>`).join('')}</div></details>`).join('')}</div>` : `<section class="empty-state small-empty"><span class="empty-round">${icon('people')}</span><h2>Первый отклик ещё впереди</h2><p>${current.published ? 'Поделитесь ссылкой со студентами. Новые ответы появятся здесь.' : 'Опубликуйте форму и поделитесь ссылкой со студентами.'}</p>${current.published ? '<button class="btn primary" data-action="copy">Скопировать ссылку</button>' : '<button class="btn primary" data-action="questions">Вернуться к вопросам</button>'}</section>`}`);
-  } catch (error) { shell(`${editorHeader()}${errorBox(error.message)}<button class="btn secondary" data-action="refresh">Попробовать снова</button>`); }
+  } catch (error) {
+    if (current?.id !== formId || activeTab !== 'responses') return;
+    shell(`${editorHeader()}${errorBox(error.message)}<button class="btn secondary" data-action="refresh">Попробовать снова</button>`);
+  }
 }
 function confirmDialog(title, message, confirmText = 'Удалить') {
   return new Promise(resolve => {
@@ -187,8 +200,8 @@ function confirmDialog(title, message, confirmText = 'Удалить') {
     dialog.showModal();
   });
 }
-async function navigate(path) {
-  if (busy && current) return;
+async function navigate(path, afterCreate = false) {
+  if (busy && !afterCreate) return;
   if (dirty && !(await confirmDialog('Покинуть конструктор?', 'Несохранённые изменения будут потеряны. Сохраните черновик, чтобы вернуться к нему позже.', 'Выйти без сохранения'))) return;
   dirty = false;
   history.pushState({}, '', path);
@@ -366,6 +379,7 @@ app.addEventListener('click', async event => {
 window.addEventListener('beforeunload', event => { if (dirty || busy) { event.preventDefault(); event.returnValue = ''; } });
 let acceptedPath = location.pathname;
 window.addEventListener('popstate', async () => {
+  if (busy) { history.pushState({}, '', acceptedPath); return; }
   if (dirty && !(await confirmDialog('Покинуть конструктор?', 'Несохранённые изменения будут потеряны.', 'Выйти без сохранения'))) { history.pushState({}, '', acceptedPath); return; }
   dirty = false;
   await route();

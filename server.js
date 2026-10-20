@@ -48,7 +48,10 @@ function adminForm(form) {
   const views = db.visits.filter(v => v.formId === form.id);
   const responses = db.responses.filter(r => r.formId === form.id);
   const starts = views.filter(v => v.started).length;
-  return { ...draft, published, dirty: !published || JSON.stringify(schema(form)) !== JSON.stringify(schema(published)),
+  // Historical snapshots were valid when published; newer editing rules must
+  // not prevent reading them or saving a corrected draft alongside them.
+  const definition = ({ title, description, fields }) => ({ title, description, fields });
+  return { ...draft, published, dirty: !published || JSON.stringify(definition(form)) !== JSON.stringify(definition(published)),
     stats: { opens: views.length, starts, submissions: responses.length } };
 }
 function versionOf(form, number) {
@@ -87,7 +90,7 @@ async function api(req, path) {
     if ((!match[2] && method === 'PUT') || (match[2] === 'publish' && method === 'POST')) {
       const input = await body(req);
       form = getForm(match[1]);
-      if (input.revision !== form.revision) fail(409, 'Форма изменена в другой вкладке. Сохраните свой текст отдельно и обновите страницу.');
+      if (input.revision !== form.revision) fail(409, 'Состояние формы на сервере изменилось. Сохраните свой текст отдельно и обновите страницу.');
       const draft = schema(match[2] ? form : input, Boolean(match[2]));
       transaction(next => {
         const target = next.forms.find(f => f.id === form.id);
@@ -119,9 +122,14 @@ async function api(req, path) {
         return { ok: true };
       }
       if (!uuid(input.requestId)) fail(422, 'Некорректный идентификатор отправки');
-      const existing = db.responses.find(r => r.formId === form.id && r.requestId === input.requestId);
-      if (existing) return { id: existing.id, createdAt: existing.createdAt };
       const answers = answersFor(version.fields, input.answers);
+      const existing = db.responses.find(r => r.formId === form.id && r.requestId === input.requestId);
+      if (existing) {
+        if (existing.version !== version.version || JSON.stringify(existing.answers) !== JSON.stringify(answers)) {
+          fail(409, 'Предыдущая отправка уже сохранена с другими ответами или версией формы. Введённые изменения не отправлены.');
+        }
+        return { id: existing.id, createdAt: existing.createdAt };
+      }
       const response = { id: randomUUID(), requestId: input.requestId, formId: form.id, version: version.version, createdAt: new Date().toISOString(), title: version.title, fields: structuredClone(version.fields), answers };
       transaction(next => {
         let visit = next.visits.find(v => v.formId === form.id && v.sessionId === input.sessionId);

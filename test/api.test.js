@@ -292,6 +292,32 @@ test('единый контракт конструктора, публичной
     }
   });
 
+  await t.test('повтор отправки возвращает прежний отклик только при совпадении версии и ответов', async () => {
+    const input = formInput();
+    let form = (await call(base, '/api/admin/forms', input)).data;
+    form = (await call(base, `/api/admin/forms/${form.id}/publish`, { revision: form.revision })).data;
+    const path = `/api/forms/${form.id}/responses`;
+    const payload = { sessionId: id(), requestId: id(), version: 1, answers: { [input.fields[0].id]: '  Исходный ответ  ' } };
+    const first = await call(base, path, payload);
+    assert.equal(first.status, 200);
+    const retry = await call(base, path, { ...payload, answers: { [input.fields[0].id]: 'Исходный ответ' } });
+    assert.equal(retry.status, 200);
+    assert.equal(retry.data.id, first.data.id);
+    const changed = await call(base, path, { ...payload, answers: { [input.fields[0].id]: 'Изменённый ответ' } });
+    assert.equal(changed.status, 409);
+    assert.match(changed.data.error, /изменения не отправлены/);
+    const invalid = await call(base, path, { ...payload, answers: { [input.fields[0].id]: 'a'.repeat(501) } });
+    assert.equal(invalid.status, 422);
+    form = (await call(base, `/api/admin/forms/${form.id}`, { ...draftPayload(form), title: 'Новая версия' }, 'PUT')).data;
+    form = (await call(base, `/api/admin/forms/${form.id}/publish`, { revision: form.revision })).data;
+    assert.equal(form.published.version, 2);
+    assert.equal((await call(base, path, { ...payload, version: 2 })).status, 409);
+    const saved = (await call(base, `/api/admin/forms/${form.id}/responses`)).data;
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].answers[input.fields[0].id], 'Исходный ответ');
+    assert.equal(saved[0].version, 1);
+  });
+
   await t.test('максимальная опубликованная форма редактируется в пределах 1 МиБ без копии публикации', async () => {
     const options = Array.from({ length: 20 }, (_, i) => String(i).padStart(2, '0') + '\u0001'.repeat(158));
     const input = { title: '\u0001'.repeat(160), description: '\u0001'.repeat(2000), fields: Array.from({ length: 30 }, () => q('radio', '\u0001'.repeat(240), true, options)) };
@@ -318,6 +344,36 @@ test('единый контракт конструктора, публичной
     assert.equal(unchanged.status, 200);
     assert.equal(unchanged.data.published.version, 2);
   });
+});
+
+test('старые публикации читаются и принимают исходный вариант после уточнения правил конструктора', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'career-forms-legacy-'));
+  const file = join(dir, 'store.json');
+  const fields = [q('radio', 'Прежний\nвопрос', true, ['Старый\nвариант', 'Другой'])];
+  const definition = { title: 'Прежняя\nформа', description: '', fields };
+  const form = { id: id(), ...definition, revision: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), versions: [{ ...definition, version: 1, publishedAt: new Date().toISOString() }] };
+  await writeFile(file, JSON.stringify({ schema: 1, forms: [form], responses: [], visits: [] }));
+  const server = await boot(file);
+  t.after(async () => { await server.stop(); await rm(dir, { recursive: true, force: true }); });
+  const { base } = server;
+  const admin = await call(base, `/api/admin/forms/${form.id}`);
+  assert.equal(admin.status, 200);
+  assert.equal(admin.data.dirty, false);
+  const updated = { ...definition, title: 'Обновлённая форма', fields: [{ ...fields[0], label: 'Новый вопрос', options: ['Новый вариант', 'Другой'] }], revision: 1 };
+  const saved = await call(base, `/api/admin/forms/${form.id}`, updated, 'PUT');
+  assert.equal(saved.status, 200);
+  assert.equal(saved.data.dirty, true);
+  assert.deepEqual(saved.data.published.fields, fields);
+  const published = await call(base, `/api/admin/forms/${form.id}/publish`, { revision: saved.data.revision });
+  assert.equal(published.status, 200);
+  assert.equal(published.data.published.version, 2);
+  const oldAnswers = { [fields[0].id]: fields[0].options[0] };
+  assert.deepEqual(parseAnswers(fields, oldAnswers), oldAnswers);
+  const response = await call(base, `/api/forms/${form.id}/responses`, { version: 1, sessionId: id(), requestId: id(), answers: oldAnswers });
+  assert.equal(response.status, 200);
+  const responses = (await call(base, `/api/admin/forms/${form.id}/responses`)).data;
+  assert.deepEqual(responses[0].fields, fields);
+  assert.deepEqual(responses[0].answers, oldAnswers);
 });
 
 test('повреждённый JSON не перезаписывается при запуске', async () => {
