@@ -1,3 +1,5 @@
+import { LIMITS, answerLimit, parseAnswers, draftPayload } from '/validation.js';
+
 const app = document.querySelector('#app');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
 const uid = () => crypto.randomUUID();
@@ -116,13 +118,13 @@ function shareCard() {
 }
 function renderEditor() {
   document.title = `${current.title} — Отклик`;
-  shell(`${editorHeader()}${shareCard()}<div class="builder-layout"><div class="builder-main"><section class="panel form-settings"><div class="panel-heading"><span class="step-label">01</span><div><h2>О форме</h2><p>Первое, что увидит студент</p></div></div><label for="form-title">Название <span class="required">*</span></label><input id="form-title" data-form="title" value="${esc(current.title)}" maxlength="160" placeholder="Например, летняя стажировка в дизайне"><label for="form-description">Описание <span class="optional">необязательно</span></label><textarea id="form-description" data-form="description" rows="3" maxlength="2000" placeholder="Для кого эта возможность и что будет после отклика">${esc(current.description)}</textarea></section><section class="questions-section"><div class="section-heading"><div class="panel-heading"><span class="step-label">02</span><div><h2>Вопросы <span class="subtle-count">${current.fields.length}/30</span></h2><p>Короткая форма — лёгкий первый шаг</p></div></div></div><div id="question-list">${current.fields.map(renderQuestion).join('') || '<div class="empty-questions">Добавьте первый вопрос с помощью кнопок ниже.</div>'}</div><div class="add-question"><span>Добавить вопрос</span><div class="type-buttons">${Object.entries(types).map(([type, [name, glyph]]) => `<button class="btn secondary" data-action="add" data-type="${type}" ${current.fields.length >= 30 ? 'disabled' : ''}>${icon(glyph)}${name}${icon('plus')}</button>`).join('')}</div></div></section><p class="version-note">${icon('clock')}При публикации создаётся версия формы. Полученные отклики сохраняют вопросы, на которые отвечал студент.</p></div><aside class="preview-panel"><div class="preview-caption"><span>${icon('eye')}Вид для студента</span><span class="badge draft">Предпросмотр</span></div><div id="preview">${renderPreview()}</div><p class="preview-note">Это предпросмотр. Отправка станет доступна по опубликованной ссылке.</p></aside></div>`);
+  shell(`${editorHeader()}${shareCard()}<div class="builder-layout"><div class="builder-main"><section class="panel form-settings"><div class="panel-heading"><span class="step-label">01</span><div><h2>О форме</h2><p>Первое, что увидит студент</p></div></div><label for="form-title">Название <span class="required">*</span></label><input id="form-title" data-form="title" value="${esc(current.title)}" maxlength="${LIMITS.title}" placeholder="Например, летняя стажировка в дизайне"><label for="form-description">Описание <span class="optional">необязательно</span></label><textarea id="form-description" data-form="description" rows="3" maxlength="${LIMITS.description}" placeholder="Для кого эта возможность и что будет после отклика">${esc(current.description)}</textarea></section><section class="questions-section"><div class="section-heading"><div class="panel-heading"><span class="step-label">02</span><div><h2>Вопросы <span class="subtle-count">${current.fields.length}/${LIMITS.questions}</span></h2><p>Короткая форма — лёгкий первый шаг</p></div></div></div><div id="question-list">${current.fields.map(renderQuestion).join('') || '<div class="empty-questions">Добавьте первый вопрос с помощью кнопок ниже.</div>'}</div><div class="add-question"><span>Добавить вопрос</span><div class="type-buttons">${Object.entries(types).map(([type, [name, glyph]]) => `<button class="btn secondary" data-action="add" data-type="${type}" ${current.fields.length >= LIMITS.questions ? 'disabled' : ''}>${icon(glyph)}${name}${icon('plus')}</button>`).join('')}</div></div></section><p class="version-note">${icon('clock')}Изменения публикуются новой версией формы. Полученные отклики сохраняют вопросы, на которые отвечал студент.</p></div><aside class="preview-panel"><div class="preview-caption"><span>${icon('eye')}Вид для студента</span><span class="badge draft">Предпросмотр</span></div><div id="preview">${renderPreview()}</div><p class="preview-note">Это предпросмотр. Отправка станет доступна по опубликованной ссылке.</p></aside></div>`);
 }
 function renderQuestion(f, i) {
-  return `<section class="panel question-card" data-field-id="${f.id}"><div class="question-toolbar"><span class="question-number">Вопрос ${String(i + 1).padStart(2, '0')}</span><div class="question-tools"><button class="icon-btn" data-action="up" data-id="${f.id}" aria-label="Вопрос ${i + 1}: переместить вверх" ${i === 0 ? 'disabled' : ''}>${icon('up')}</button><button class="icon-btn" data-action="down" data-id="${f.id}" aria-label="Вопрос ${i + 1}: переместить вниз" ${i === current.fields.length - 1 ? 'disabled' : ''}>${icon('down')}</button><button class="icon-btn danger" data-action="delete" data-id="${f.id}" aria-label="Удалить вопрос ${i + 1}">${icon('trash')}</button></div></div><label class="sr-only" for="label-${f.id}">Текст вопроса ${i + 1}</label><input class="question-title" id="label-${f.id}" data-field="label" data-id="${f.id}" value="${esc(f.label)}" placeholder="Что хотите спросить?" maxlength="240"><div class="question-controls"><label class="type-select"><span class="sr-only">Тип вопроса ${i + 1}</span><select data-field="type" data-id="${f.id}">${Object.entries(types).map(([key, [name]]) => `<option value="${key}" ${f.type === key ? 'selected' : ''}>${name}</option>`).join('')}</select></label><label class="switch-label"><input type="checkbox" role="switch" data-field="required" data-id="${f.id}" ${f.required ? 'checked' : ''}><span class="switch-track"></span>Обязательный</label></div>${f.type === 'radio' ? `<div class="options-editor"><label for="options-${f.id}">Варианты ответа <span class="optional">каждый с новой строки</span></label><textarea id="options-${f.id}" data-field="options" data-id="${f.id}" rows="3" maxlength="3220" placeholder="Первый вариант&#10;Второй вариант">${esc(f.options.join('\n'))}</textarea><small>От 2 до 20 вариантов без повторений</small></div>` : `<div class="field-placeholder">${f.type === 'textarea' ? 'Развёрнутый ответ студента…' : f.type === 'email' ? 'name@example.ru' : 'Короткий ответ студента…'}</div>`}</section>`;
+  return `<section class="panel question-card" data-field-id="${f.id}"><div class="question-toolbar"><span class="question-number">Вопрос ${String(i + 1).padStart(2, '0')}</span><div class="question-tools"><button class="icon-btn" data-action="up" data-id="${f.id}" aria-label="Вопрос ${i + 1}: переместить вверх" ${i === 0 ? 'disabled' : ''}>${icon('up')}</button><button class="icon-btn" data-action="down" data-id="${f.id}" aria-label="Вопрос ${i + 1}: переместить вниз" ${i === current.fields.length - 1 ? 'disabled' : ''}>${icon('down')}</button><button class="icon-btn danger" data-action="delete" data-id="${f.id}" aria-label="Удалить вопрос ${i + 1}">${icon('trash')}</button></div></div><label class="sr-only" for="label-${f.id}">Текст вопроса ${i + 1}</label><input class="question-title" id="label-${f.id}" data-field="label" data-id="${f.id}" value="${esc(f.label)}" placeholder="Что хотите спросить?" maxlength="${LIMITS.label}"><div class="question-controls"><label class="type-select"><span class="sr-only">Тип вопроса ${i + 1}</span><select data-field="type" data-id="${f.id}">${Object.entries(types).map(([key, [name]]) => `<option value="${key}" ${f.type === key ? 'selected' : ''}>${name}</option>`).join('')}</select></label><label class="switch-label"><input type="checkbox" role="switch" data-field="required" data-id="${f.id}" ${f.required ? 'checked' : ''}><span class="switch-track"></span>Обязательный</label></div>${f.type === 'radio' ? `<div class="options-editor"><label for="options-${f.id}">Варианты ответа <span class="optional">каждый с новой строки</span></label><textarea id="options-${f.id}" data-field="options" data-id="${f.id}" rows="3" placeholder="Первый вариант&#10;Второй вариант">${esc(f.options.join('\n'))}</textarea><small>От ${LIMITS.minOptions} до ${LIMITS.options} вариантов, до ${LIMITS.option} символов каждый. Пустые строки не учитываются.</small></div>` : `<div class="field-placeholder">${f.type === 'textarea' ? 'Развёрнутый ответ студента…' : f.type === 'email' ? 'name@example.ru' : 'Короткий ответ студента…'}</div>`}</section>`;
 }
 function renderPreview() {
-  return `<div class="mini-form"><div class="mini-brand">✦ КАРЬЕРНЫЕ ВОЗМОЖНОСТИ</div><h2>${esc(current.title) || 'Название формы'}</h2><p class="preserve">${esc(current.description) || 'Здесь появится описание вашей возможности.'}</p><div class="mini-divider"></div>${current.fields.map((f, i) => `<div class="mini-question"><strong>${i + 1}. ${esc(f.label) || 'Новый вопрос'} ${f.required ? '<span class="required">*</span>' : ''}</strong>${f.type === 'radio' ? `<div class="mini-options">${f.options.map(o => `<span>○ ${esc(o)}</span>`).join('') || '<span>○ Варианты ответа</span>'}</div>` : `<div class="mini-input ${f.type === 'textarea' ? 'tall' : ''}">${f.type === 'email' ? 'name@example.ru' : 'Ваш ответ'}</div>`}</div>`).join('') || '<div class="preview-empty">Ваши вопросы появятся здесь</div>'}<div class="mini-submit">Отправить отклик ${icon('arrow')}</div><small>Начните свою следующую главу.</small></div>`;
+  return `<div class="mini-form"><div class="mini-brand">✦ КАРЬЕРНЫЕ ВОЗМОЖНОСТИ</div><h2>${esc(current.title) || 'Название формы'}</h2><p class="preserve">${esc(current.description) || 'Здесь появится описание вашей возможности.'}</p><div class="mini-divider"></div>${current.fields.map((f, i) => `<div class="mini-question"><strong>${i + 1}. ${esc(f.label) || 'Новый вопрос'} ${f.required ? '<span class="required">*</span>' : ''}</strong>${f.type === 'radio' ? `<div class="mini-options">${f.options.map(o => o.trim()).filter(Boolean).map(o => `<span>○ ${esc(o)}</span>`).join('') || '<span>○ Варианты ответа</span>'}</div>` : `<div class="mini-input ${f.type === 'textarea' ? 'tall' : ''}">${f.type === 'email' ? 'name@example.ru' : 'Ваш ответ'}</div>`}</div>`).join('') || '<div class="preview-empty">Ваши вопросы появятся здесь</div>'}<div class="mini-submit">Отправить отклик ${icon('arrow')}</div><small>Начните свою следующую главу.</small></div>`;
 }
 function markDirty() {
   dirty = true;
@@ -151,11 +153,14 @@ function setBusy(value, action) {
 }
 async function save(publish = false) {
   if (busy || !current) return;
+  let payload;
+  try { payload = draftPayload(current, publish); }
+  catch (error) { setError(error.message); return; }
   setBusy(true, publish ? 'publish' : 'save');
   document.querySelector('#page-error')?.remove();
   try {
     if (dirty) {
-      current = await post(`/api/admin/forms/${current.id}`, current, 'PUT');
+      current = await post(`/api/admin/forms/${current.id}`, payload, 'PUT');
       dirty = false;
     }
     if (publish) current = await post(`/api/admin/forms/${current.id}/publish`, { revision: current.revision });
@@ -229,7 +234,7 @@ function studentField(f, i) {
   const val = student.answers[f.id] || '';
   const label = `<span class="field-index">${String(i + 1).padStart(2, '0')}</span>${esc(f.label)} ${f.required ? '<span class="required">*</span>' : '<span class="optional">необязательно</span>'}`;
   const attrs = `name="${f.id}" id="answer-${f.id}" aria-describedby="error-${f.id}" ${f.required ? 'required' : ''}`;
-  return `<div class="student-question" id="group-${f.id}">${f.type === 'radio' ? `<fieldset><legend>${label}</legend><div class="radio-options">${f.options.map((o, j) => `<label class="radio-option"><input type="radio" name="${f.id}" value="${esc(o)}" ${o === val ? 'checked' : ''} ${f.required ? 'required' : ''} aria-describedby="error-${f.id}"><span>${esc(o)}</span></label>`).join('')}${!f.required ? `<label class="radio-option"><input type="radio" name="${f.id}" value="" ${!val ? 'checked' : ''}><span class="optional">Пропустить вопрос</span></label>` : ''}</div></fieldset>` : `<label for="answer-${f.id}">${label}</label>${f.type === 'textarea' ? `<textarea ${attrs} rows="4" maxlength="5000" placeholder="Расскажите своими словами…">${esc(val)}</textarea>` : `<input ${attrs} type="${f.type === 'email' ? 'email' : 'text'}" maxlength="${f.type === 'email' ? 254 : 500}" ${f.type === 'email' ? 'autocomplete="email" inputmode="email"' : ''} value="${esc(val)}" placeholder="${f.type === 'email' ? 'name@example.ru' : 'Ваш ответ'}">`}`}<span class="field-error" id="error-${f.id}" aria-live="polite"></span></div>`;
+  return `<div class="student-question" id="group-${f.id}">${f.type === 'radio' ? `<fieldset><legend>${label}</legend><div class="radio-options">${f.options.map((o, j) => `<label class="radio-option"><input type="radio" name="${f.id}" value="${esc(o)}" ${o === val ? 'checked' : ''} ${f.required ? 'required' : ''} aria-describedby="error-${f.id}"><span>${esc(o)}</span></label>`).join('')}${!f.required ? `<label class="radio-option"><input type="radio" name="${f.id}" value="" ${!val ? 'checked' : ''}><span class="optional">Пропустить вопрос</span></label>` : ''}</div></fieldset>` : `<label for="answer-${f.id}">${label}</label>${f.type === 'textarea' ? `<textarea ${attrs} rows="4" maxlength="${LIMITS.textarea}" placeholder="Расскажите своими словами…">${esc(val)}</textarea>` : `<input ${attrs} type="${f.type === 'email' ? 'email' : 'text'}" maxlength="${answerLimit(f.type)}" ${f.type === 'email' ? 'autocomplete="email" inputmode="email"' : ''} value="${esc(val)}" placeholder="${f.type === 'email' ? 'name@example.ru' : 'Ваш ответ'}">`}`}<span class="field-error" id="error-${f.id}" aria-live="polite"></span></div>`;
 }
 function updateProgress() {
   const filled = publicForm.fields.filter(f => String(student.answers[f.id] || '').trim()).length;
@@ -254,14 +259,10 @@ function showFieldErrors(errors) {
 async function submitStudent(event) {
   event.preventDefault();
   if (busy) return;
-  const errors = {};
-  for (const f of publicForm.fields) {
-    const value = (student.answers[f.id] || '').trim();
-    if (f.required && !value) errors[f.id] = 'Ответьте на обязательный вопрос';
-    else if (value && f.type === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) errors[f.id] = 'Введите email в формате name@example.ru';
-  }
-  showFieldErrors(errors);
-  if (Object.keys(errors).length) return;
+  let answers;
+  try { answers = parseAnswers(publicForm.fields, student.answers); }
+  catch (error) { showFieldErrors(error.fields || {}); return; }
+  showFieldErrors({});
   busy = true;
   const formNode = document.querySelector('#student-form');
   const button = formNode.querySelector('[type="submit"]');
@@ -269,7 +270,7 @@ async function submitStudent(event) {
   button.innerHTML = '<span class="spinner"></span>Отправляем…';
   document.querySelector('#submit-error').hidden = true;
   try {
-    const result = await post(`/api/forms/${publicForm.id}/responses`, { ...student, key: undefined, version: publicForm.version });
+    const result = await post(`/api/forms/${publicForm.id}/responses`, { answers, sessionId: student.sessionId, requestId: student.requestId, version: publicForm.version });
     storageRemove(student.key);
     const receipt = { ...result, title: publicForm.title };
     storageSet(`receipt:${publicForm.id}`, receipt);
@@ -338,7 +339,7 @@ app.addEventListener('click', async event => {
     return;
   }
   if (action === 'add') {
-    if (current.fields.length >= 30) return;
+    if (current.fields.length >= LIMITS.questions) return;
     const type = button.dataset.type;
     const field = question(type, '', false, type === 'radio' ? ['Первый вариант', 'Второй вариант'] : []);
     current.fields.push(field);

@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, openSync, fsyncSync
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { LIMITS, parseForm as schema, parseAnswers as answersFor } from './public/validation.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const file = resolve(process.env.DATA_FILE || join(root, 'data/store.json'));
@@ -35,36 +36,7 @@ function transaction(fn) {
   return result;
 }
 function fail(status, message, fields) { throw Object.assign(new Error(message), { status, fields }); }
-const types = new Set(['text', 'textarea', 'email', 'radio']);
-// 30 × 5000 UTF-16 code units can take 900,000 JSON bytes when escaped.
-// 1 MiB covers this maximum plus UUID keys/metadata, and caps memory per request.
-const MAX_JSON_BODY_BYTES = 1024 * 1024;
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-const clean = (value, max, name) => {
-  if (typeof value !== 'string' || value.length > max) fail(422, `${name}: ожидается текст до ${max} символов`);
-  return value.trim();
-};
-function schema(input, publish = false) {
-  const title = clean(input.title, 160, 'Название');
-  const description = clean(input.description, 2000, 'Описание');
-  if (!title) fail(422, 'Добавьте название формы');
-  if (!Array.isArray(input.fields) || input.fields.length > 30 || (publish && !input.fields.length)) fail(422, 'Добавьте от 1 до 30 вопросов');
-  const seen = new Set();
-  const fields = input.fields.map((f, i) => {
-    if (!f || !uuid(f.id) || seen.has(f.id) || !types.has(f.type) || typeof f.required !== 'boolean') fail(422, `Проверьте вопрос ${i + 1}`);
-    seen.add(f.id);
-    const label = clean(f.label, 240, `Вопрос ${i + 1}`);
-    if (publish && !label) fail(422, `Добавьте название вопроса ${i + 1}`);
-    let options = [];
-    if (f.type === 'radio') {
-      if (!Array.isArray(f.options) || f.options.length > 20) fail(422, 'В вопросе может быть до 20 вариантов');
-      options = f.options.map(o => clean(o, 160, 'Вариант ответа')).filter(Boolean);
-      if (new Set(options).size !== options.length || (publish && options.length < 2)) fail(422, `Вопрос ${i + 1}: добавьте 2–20 неповторяющихся вариантов`);
-    }
-    return { id: f.id, type: f.type, label, required: f.required, options };
-  });
-  return { title, description, fields };
-}
 function getForm(id) {
   const form = db.forms.find(f => f.id === id);
   if (!form) fail(404, 'Форма не найдена');
@@ -89,7 +61,7 @@ async function body(req) {
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_JSON_BODY_BYTES) fail(413, 'Слишком большой запрос');
+    if (size > LIMITS.jsonBytes) fail(413, 'Слишком большой запрос');
     chunks.push(chunk);
   }
   try {
@@ -97,23 +69,6 @@ async function body(req) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
     return value;
   } catch { fail(400, 'Некорректный JSON'); }
-}
-function answersFor(version, raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(422, 'Проверьте ответы');
-  const fields = {};
-  const answers = {};
-  for (const f of version.fields) {
-    const val = raw[f.id] ?? '';
-    const max = f.type === 'textarea' ? 5000 : f.type === 'email' ? 254 : 500;
-    if (typeof val !== 'string' || val.length > max) { fields[f.id] = `Не более ${max} символов`; continue; }
-    const value = val.trim();
-    if (!value && f.required) fields[f.id] = 'Ответьте на обязательный вопрос';
-    else if (value && f.type === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) fields[f.id] = 'Введите email в формате name@example.ru';
-    else if (value && f.type === 'radio' && !f.options.includes(value)) fields[f.id] = 'Выберите один из предложенных вариантов';
-    answers[f.id] = value;
-  }
-  if (Object.keys(fields).length) fail(422, 'Проверьте отмеченные поля', fields);
-  return answers;
 }
 async function api(req, path) {
   const method = req.method;
@@ -166,7 +121,7 @@ async function api(req, path) {
       if (!uuid(input.requestId)) fail(422, 'Некорректный идентификатор отправки');
       const existing = db.responses.find(r => r.formId === form.id && r.requestId === input.requestId);
       if (existing) return { id: existing.id, createdAt: existing.createdAt };
-      const answers = answersFor(version, input.answers);
+      const answers = answersFor(version.fields, input.answers);
       const response = { id: randomUUID(), requestId: input.requestId, formId: form.id, version: version.version, createdAt: new Date().toISOString(), title: version.title, fields: structuredClone(version.fields), answers };
       transaction(next => {
         let visit = next.visits.find(v => v.formId === form.id && v.sessionId === input.sessionId);
@@ -182,6 +137,7 @@ async function api(req, path) {
 
 const assets = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/validation.js', ['validation.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/favicon.svg', ['favicon.svg', 'image/svg+xml']]
 ]);

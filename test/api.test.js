@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import http from 'node:http';
+import { LIMITS, draftPayload, parseForm, parseAnswers } from '../public/validation.js';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const id = randomUUID;
@@ -48,6 +49,10 @@ test('полный жизненный цикл, версии, валидация
     assert.match(await admin.text(), /lang="ru"/);
     assert.ok(admin.headers.get('content-security-policy').includes("frame-ancestors 'none'"));
     assert.equal((await fetch(base + '/styles.css')).status, 200);
+    const validation = await fetch(base + '/validation.js');
+    assert.equal(validation.status, 200);
+    assert.match(validation.headers.get('content-type'), /javascript/);
+    assert.match(await validation.text(), /export function parseAnswers/);
     assert.equal((await fetch(base + '/', { redirect: 'manual' })).headers.get('location'), '/admin');
     assert.equal((await fetch(base + '/missing')).status, 404);
   });
@@ -180,6 +185,139 @@ test('30 длинных ответов по 5000 символов принима
   const oversized = await call(base, path, { ...payload, requestId: id(), padding: 'a'.repeat(1024 * 1024) });
   assert.equal(oversized.status, 413);
   assert.equal((await call(base, `/api/admin/forms/${form.id}/responses`)).data.length, 4);
+});
+
+test('единый контракт конструктора, публичной формы и API', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'career-forms-contract-'));
+  const server = await boot(join(dir, 'store.json'));
+  t.after(async () => { await server.stop(); await rm(dir, { recursive: true, force: true }); });
+  const { base } = server;
+  const formInput = () => ({ title: 'Форма', description: '', fields: [q('text', 'Имя')] });
+  async function rejectForm(input) {
+    let clientError;
+    try { parseForm(input); } catch (error) { clientError = error; }
+    assert.equal(clientError?.status, 422, 'Клиент должен отклонить схему');
+    const api = await call(base, '/api/admin/forms', input);
+    assert.equal(api.status, 422);
+    assert.equal(api.data.error, clientError.message);
+  }
+
+  await t.test('границы названия, описания, вопросов и вариантов совпадают', async () => {
+    const valid = { title: 'Я'.repeat(160), description: '漢'.repeat(2000), fields: [q('radio', 'В'.repeat(240), true, ['А'.repeat(160), 'Б'.repeat(160)])] };
+    const created = await call(base, '/api/admin/forms', valid);
+    assert.equal(created.status, 200);
+    assert.deepEqual(created.data.fields, parseForm(valid).fields);
+    for (const key of ['title', 'description']) {
+      const input = structuredClone(valid);
+      input[key] += 'X';
+      await rejectForm(input);
+    }
+    for (const key of ['label', 'options']) {
+      const input = structuredClone(valid);
+      if (key === 'label') input.fields[0].label += 'X';
+      else input.fields[0].options[0] += 'X';
+      await rejectForm(input);
+    }
+    await rejectForm({ ...formInput(), fields: Array.from({ length: 31 }, () => q('text', 'Вопрос')) });
+    for (const input of [
+      { ...formInput(), title: 'Две\nстроки' },
+      { ...formInput(), fields: [q('text', 'Две\r\nстроки')] },
+      { ...formInput(), fields: [q('radio', 'Выбор', true, ['Две\nстроки', 'Другой'])] },
+    ]) await rejectForm(input);
+  });
+
+  await t.test('20 вариантов с пустыми строками сохраняются; 21 и повтор после trim отклоняются', async () => {
+    const options = Array.from({ length: 20 }, (_, i) => `Вариант ${i + 1}`);
+    const input = { ...formInput(), fields: [q('radio', 'Выбор', true, ['', ...options, ' ', ''])] };
+    const created = await call(base, '/api/admin/forms', input);
+    assert.equal(created.status, 200);
+    assert.deepEqual(created.data.fields[0].options, options);
+    const published = await call(base, `/api/admin/forms/${created.data.id}/publish`, { revision: created.data.revision });
+    assert.equal(published.status, 200);
+    await rejectForm({ ...input, fields: [q('radio', 'Выбор', true, [...options, 'Лишний'])] });
+    await rejectForm({ ...input, fields: [q('radio', 'Выбор', true, ['Дизайн', ' Дизайн '])] });
+    await rejectForm({ ...input, fields: [q('radio', 'Выбор', true, ['Дизайн', null])] });
+  });
+
+  await t.test('незаполненный вопрос и один вариант допустимы в черновике, но не при публикации', async () => {
+    for (const field of [q('text', ''), q('radio', 'Выбор', true, ['Один'])]) {
+      const input = { ...formInput(), fields: [field] };
+      const created = await call(base, '/api/admin/forms', input);
+      assert.equal(created.status, 200);
+      let clientError;
+      try { draftPayload(created.data, true); } catch (error) { clientError = error; }
+      const published = await call(base, `/api/admin/forms/${created.data.id}/publish`, { revision: created.data.revision });
+      assert.equal(published.status, 422);
+      assert.equal(published.data.error, clientError.message);
+    }
+  });
+
+  await t.test('все типы ответов: точные границы, UTF-16, типы, переносы и варианты', async () => {
+    const fields = [q('text', 'Текст'), q('email', 'Email'), q('textarea', 'Длинный текст'), q('radio', 'Выбор', true, ['Я'.repeat(160), 'Другой'])];
+    const created = (await call(base, '/api/admin/forms', { ...formInput(), fields })).data;
+    await call(base, `/api/admin/forms/${created.id}/publish`, { revision: created.revision });
+    const emailSuffix = '@example.test';
+    const valid = Object.fromEntries(fields.map((f, i) => [f.id, ['🙂'.repeat(250), 'a'.repeat(254 - emailSuffix.length) + emailSuffix, '🙂'.repeat(2500), 'Я'.repeat(160)][i]]));
+    const submit = answers => call(base, `/api/forms/${created.id}/responses`, { answers, version: 1, sessionId: id(), requestId: id() });
+    assert.equal((await submit(valid)).status, 200);
+    assert.deepEqual(parseAnswers(fields, valid), valid);
+    for (let i = 0; i < fields.length; i++) {
+      for (const value of [valid[fields[i].id] + 'X', null, 123, ' ']) {
+        const answers = { ...valid, [fields[i].id]: value };
+        let clientError;
+        try { parseAnswers(fields, answers); } catch (error) { clientError = error; }
+        const result = await submit(answers);
+        assert.equal(clientError?.status, 422);
+        assert.equal(result.status, 422);
+        assert.deepEqual(result.data.fields, clientError.fields);
+      }
+    }
+    for (const [i, value] of [[0, 'Одна\nДругая'], [1, 'a@b.test\n'], [3, 'Несуществующий']]) {
+      const answers = { ...valid, [fields[i].id]: value };
+      assert.throws(() => parseAnswers(fields, answers), { status: 422 });
+      assert.equal((await submit(answers)).status, 422);
+    }
+    const multiline = { ...valid, [fields[2].id]: 'Первая\nВторая' };
+    assert.equal((await submit(multiline)).status, 200);
+    assert.equal(parseAnswers(fields, multiline)[fields[2].id], 'Первая\nВторая');
+    const optional = q('email', 'Email необязательно', false);
+    const optionalForm = (await call(base, '/api/admin/forms', { ...formInput(), fields: [optional] })).data;
+    await call(base, `/api/admin/forms/${optionalForm.id}/publish`, { revision: optionalForm.revision });
+    for (const [value, expectedStatus] of [[' ', 200], ['не email', 422], [' name@example.test ', 200]]) {
+      const answers = { [optional.id]: value };
+      if (expectedStatus === 200) assert.equal(parseAnswers([optional], answers)[optional.id], value.trim());
+      else assert.throws(() => parseAnswers([optional], answers), { status: 422 });
+      const result = await call(base, `/api/forms/${optionalForm.id}/responses`, { answers, version: 1, sessionId: id(), requestId: id() });
+      assert.equal(result.status, expectedStatus);
+    }
+  });
+
+  await t.test('максимальная опубликованная форма редактируется в пределах 1 МиБ без копии публикации', async () => {
+    const options = Array.from({ length: 20 }, (_, i) => String(i).padStart(2, '0') + '\u0001'.repeat(158));
+    const input = { title: '\u0001'.repeat(160), description: '\u0001'.repeat(2000), fields: Array.from({ length: 30 }, () => q('radio', '\u0001'.repeat(240), true, options)) };
+    const created = await call(base, '/api/admin/forms', input);
+    assert.equal(created.status, 200);
+    const published = await call(base, `/api/admin/forms/${created.data.id}/publish`, { revision: created.data.revision });
+    assert.equal(published.status, 200);
+    const current = published.data;
+    assert.ok(Buffer.byteLength(JSON.stringify(current)) > LIMITS.jsonBytes, 'Обратная отправка всего admin-ответа превышала бы лимит');
+    current.title = 'X' + current.title.slice(1);
+    const payload = draftPayload(current);
+    assert.ok(Buffer.byteLength(JSON.stringify(payload)) < LIMITS.jsonBytes);
+    assert.equal(payload.published, undefined);
+    assert.equal(payload.stats, undefined);
+    const saved = await call(base, `/api/admin/forms/${current.id}`, payload, 'PUT');
+    assert.equal(saved.status, 200);
+    assert.equal(saved.data.title, current.title);
+    assert.equal(saved.data.published.title, input.title);
+    assert.equal(saved.data.published.version, 1);
+    const republished = await call(base, `/api/admin/forms/${current.id}/publish`, { revision: saved.data.revision });
+    assert.equal(republished.status, 200);
+    assert.equal(republished.data.published.version, 2);
+    const unchanged = await call(base, `/api/admin/forms/${current.id}/publish`, { revision: republished.data.revision });
+    assert.equal(unchanged.status, 200);
+    assert.equal(unchanged.data.published.version, 2);
+  });
 });
 
 test('повреждённый JSON не перезаписывается при запуске', async () => {
