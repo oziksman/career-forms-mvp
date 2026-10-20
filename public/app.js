@@ -177,7 +177,7 @@ async function renderResponses() {
 function confirmDialog(title, message, confirmText = 'Удалить') {
   return new Promise(resolve => {
     const dialog = document.querySelector('#confirm-dialog');
-    dialog.innerHTML = `<form method="dialog"><span class="eyebrow">ПОДТВЕРЖДЕНИЕ</span><h2>${esc(title)}</h2><p>${esc(message)}</p><div class="dialog-actions"><button class="btn secondary" value="cancel" autofocus>Отмена</button><button class="btn primary" value="ok">${esc(confirmText)}</button></div></form>`;
+    dialog.innerHTML = `<form method="dialog"><span class="eyebrow">ПОДТВЕРЖДЕНИЕ</span><h2 id="confirm-title">${esc(title)}</h2><p id="confirm-description">${esc(message)}</p><div class="dialog-actions"><button class="btn secondary" value="cancel" autofocus>Отмена</button><button class="btn primary" value="ok">${esc(confirmText)}</button></div></form>`;
     dialog.addEventListener('close', () => resolve(dialog.returnValue === 'ok'), { once: true });
     dialog.showModal();
   });
