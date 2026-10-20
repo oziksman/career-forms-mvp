@@ -1,0 +1,10 @@
+{
+  "name": "career-forms-mvp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Локальный сервис форм для карьерной платформы студентов",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node server.js", "test": "node --test" },
+  "license": "MIT"
+}
